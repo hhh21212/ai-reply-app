@@ -1,27 +1,29 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../providers/chat_provider.dart';
 import 'archive_screen.dart';
 import 'chat_screen.dart';
 import 'settings_screen.dart';
 
-class HomeShell extends StatefulWidget {
+class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key});
 
   @override
-  State<HomeShell> createState() => _HomeShellState();
+  ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> {
-  int _index = 0;
-
+class _HomeShellState extends ConsumerState<HomeShell> {
   @override
   Widget build(BuildContext context) {
+    final index = ref.watch(homeTabProvider);
     const pages = [ChatScreen(), ArchiveScreen(), SettingsScreen()];
     return Scaffold(
-      body: IndexedStack(index: _index, children: pages),
+      body: IndexedStack(index: index, children: pages),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        selectedIndex: index,
+        onDestinationSelected: (i) =>
+            ref.read(homeTabProvider.notifier).state = i,
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.chat_bubble_outline),

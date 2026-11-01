@@ -20,22 +20,36 @@ Future<void> main() async {
     ProviderScope(
       overrides: [
         databaseProvider.overrideWithValue(db),
-        settingsServiceProvider.overrideWithValue(SettingsService(secure, prefs)),
+        settingsServiceProvider.overrideWithValue(
+          SettingsService(db, secure, prefs),
+        ),
       ],
       child: const AiReplyApp(),
     ),
   );
 }
 
-class AiReplyApp extends StatelessWidget {
+class AiReplyApp extends ConsumerWidget {
   const AiReplyApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref
+            .watch(settingsControllerProvider)
+            .valueOrNull
+            ?.themeMode ??
+        ThemeMode.system;
+
     return MaterialApp(
       title: 'AI 应答助手',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+      darkTheme: ThemeData(
+        colorSchemeSeed: Colors.indigo,
+        brightness: Brightness.dark,
+        useMaterial3: true,
+      ),
+      themeMode: themeMode,
       home: const HomeShell(),
     );
   }

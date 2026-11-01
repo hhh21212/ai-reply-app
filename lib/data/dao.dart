@@ -77,6 +77,75 @@ extension AppDatabaseDao on AppDatabase {
     ));
   }
 
+  /// 更新消息状态（'ok' | 'partial' | 'error'），用于标记「出错保留的部分回答」。
+  Future<void> updateMessageStatus(int id, String status) {
+    return (update(messages)..where((t) => t.id.equals(id)))
+        .write(MessagesCompanion(status: Value(status)));
+  }
+
+  Future<void> deleteMessage(int id) {
+    return (delete(messages)..where((t) => t.id.equals(id))).go();
+  }
+
+  // ---------- 多 API 配置 ----------
+
+  Future<List<ApiProfile>> getAllApiProfiles() {
+    return (select(apiProfiles)
+          ..orderBy([
+            (t) => OrderingTerm.asc(t.sortOrder),
+            (t) => OrderingTerm.asc(t.id),
+          ]))
+        .get();
+  }
+
+  Future<int> insertApiProfile({
+    required String name,
+    required String baseUrl,
+    required String model,
+    bool active = false,
+    int sortOrder = 0,
+  }) {
+    return into(apiProfiles).insert(ApiProfilesCompanion.insert(
+          name: name,
+          baseUrl: baseUrl,
+          model: model,
+          active: Value(active),
+          sortOrder: Value(sortOrder),
+        ));
+  }
+
+  Future<void> updateApiProfile({
+    required int id,
+    String? name,
+    String? baseUrl,
+    String? model,
+    bool? active,
+    int? sortOrder,
+  }) {
+    return (update(apiProfiles)..where((t) => t.id.equals(id))).write(
+          ApiProfilesCompanion(
+            name: name == null ? const Value.absent() : Value(name),
+            baseUrl: baseUrl == null ? const Value.absent() : Value(baseUrl),
+            model: model == null ? const Value.absent() : Value(model),
+            active: active == null ? const Value.absent() : Value(active),
+            sortOrder:
+                sortOrder == null ? const Value.absent() : Value(sortOrder),
+          ),
+        );
+  }
+
+  Future<void> deleteApiProfile(int id) {
+    return (delete(apiProfiles)..where((t) => t.id.equals(id))).go();
+  }
+
+  /// 把 id 设为 active，其余全部取消 active。
+  Future<void> setActiveApiProfile(int id) async {
+    await (update(apiProfiles))
+        .write(const ApiProfilesCompanion(active: Value(false)));
+    await (update(apiProfiles)..where((t) => t.id.equals(id)))
+        .write(const ApiProfilesCompanion(active: Value(true)));
+  }
+
   // ---------- 档案 ----------
 
   Future<ArchiveEntry> addArchiveEntry({
@@ -116,6 +185,55 @@ extension AppDatabaseDao on AppDatabase {
 
   Future<void> deleteArchiveEntry(int id) {
     return (delete(archiveEntries)..where((t) => t.id.equals(id))).go();
+  }
+
+  /// 把一次新对话的摘要/关键点追加写回某条既有档案（「拓展」）。
+  Future<void> extendArchiveEntry({
+    required int id,
+    required String extraSummary,
+    required List<String> extraKeyPoints,
+    required List<String> extraTags,
+  }) async {
+    final existing = await (select(archiveEntries)
+          ..where((t) => t.id.equals(id)))
+        .getSingleOrNull();
+    if (existing == null) return;
+
+    final oldKeyPoints = _decodeStringList(existing.keyPointsJson);
+    final oldTags = _decodeStringList(existing.tagsJson);
+
+    final mergedKeyPoints = <String>[...oldKeyPoints];
+    for (final k in extraKeyPoints) {
+      if (!mergedKeyPoints.contains(k)) mergedKeyPoints.add(k);
+    }
+    final mergedTags = <String>[...oldTags];
+    for (final t in extraTags) {
+      if (!mergedTags.contains(t)) mergedTags.add(t);
+    }
+
+    final parts = <String>[
+      if (existing.summary.trim().isNotEmpty) existing.summary.trim(),
+      if (extraSummary.trim().isNotEmpty) extraSummary.trim(),
+    ];
+    final mergedSummary = parts.join('\n\n—— 后续拓展 ——\n\n');
+
+    await (update(archiveEntries)..where((t) => t.id.equals(id))).write(
+      ArchiveEntriesCompanion(
+        summary: Value(mergedSummary),
+        keyPointsJson: Value(jsonEncode(mergedKeyPoints)),
+        tagsJson: Value(jsonEncode(mergedTags)),
+      ),
+    );
+  }
+
+  List<String> _decodeStringList(String json) {
+    try {
+      final v = jsonDecode(json);
+      if (v is List) {
+        return v.map((e) => e.toString()).toList();
+      }
+    } catch (_) {}
+    return const [];
   }
 
   // ---------- 备份 ----------

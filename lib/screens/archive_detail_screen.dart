@@ -35,7 +35,19 @@ class ArchiveDetailScreen extends ConsumerWidget {
     final conversationId = entry.conversationId;
 
     return Scaffold(
-      appBar: AppBar(title: Text(entry.title)),
+      appBar: AppBar(
+        title: Text(entry.title),
+        actions: [
+          IconButton(
+            tooltip: '调用到对话',
+            icon: const Icon(Icons.input),
+            onPressed: () {
+              referenceArchiveToChat(ref, entry!);
+              Navigator.of(context).pop();
+            },
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [

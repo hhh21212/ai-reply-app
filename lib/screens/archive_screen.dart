@@ -54,9 +54,19 @@ class ArchiveScreen extends ConsumerWidget {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      trailing: Text(
-                        _formatTime(e.createdAt),
-                        style: Theme.of(context).textTheme.bodySmall,
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _formatTime(e.createdAt),
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          IconButton(
+                            tooltip: '调用到对话',
+                            icon: const Icon(Icons.input),
+                            onPressed: () => referenceArchiveToChat(ref, e),
+                          ),
+                        ],
                       ),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(

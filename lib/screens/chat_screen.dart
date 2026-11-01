@@ -3,10 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database.dart';
 import '../data/dao.dart';
-import '../providers/chat_provider.dart';
 import '../providers/archive_provider.dart';
-import '../providers/settings_provider.dart';
-import '../services/api_client.dart';
+import '../providers/chat_controller.dart';
+import '../providers/chat_provider.dart';
 import '../widgets/message_bubble.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -17,11 +16,6 @@ class ChatScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
-  int? _conversationId;
-  List<Message> _messages = [];
-  String _streaming = '';
-  bool _sending = false;
-  bool _archiving = false;
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
 
@@ -44,140 +38,57 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     });
   }
 
-  void _showSnack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  Future<void> _loadConversation(int id) async {
-    final db = ref.read(databaseProvider);
-    final msgs = await db.getMessages(id);
-    if (!mounted) return;
-    setState(() {
-      _conversationId = id;
-      _messages = msgs;
-      _streaming = '';
-    });
-    _scrollToBottom();
-  }
-
-  Future<void> _newConversation() async {
-    final conv = await ref.read(databaseProvider).createConversation();
-    if (!mounted) return;
-    setState(() {
-      _conversationId = conv.id;
-      _messages = [];
-      _streaming = '';
-    });
-    _scrollToBottom();
-  }
-
-  Future<void> _send() async {
+  void _send() {
     final text = _inputController.text.trim();
-    if (text.isEmpty || _sending) return;
-
-    final settings = ref.read(settingsControllerProvider).valueOrNull;
-    if (settings == null || !settings.isConfigured) {
-      _showSnack('请先在「设置」页配置 API 地址与 Key');
-      return;
-    }
-    final db = ref.read(databaseProvider);
-    final api = ref.read(apiClientProvider);
-
+    if (text.isEmpty) return;
     _inputController.clear();
-    final convId = _conversationId ?? (await db.createConversation()).id;
-    if (_conversationId == null && mounted) {
-      setState(() => _conversationId = convId);
-    }
-
-    final userMsg = await db.addMessage(convId, 'user', text);
-    await db.touchConversation(convId);
-    if (!mounted) return;
-    setState(() {
-      _messages = [..._messages, userMsg];
-      _streaming = '';
-      _sending = true;
-    });
-    _scrollToBottom();
-
-    final apiMessages =
-        _messages.map((m) => ChatMessage(m.role, m.content)).toList();
-
-    final buffer = StringBuffer();
-    try {
-      await for (final chunk
-          in api.chatStream(settings.toApiConfig(), apiMessages)) {
-        buffer.write(chunk);
-        if (mounted) setState(() => _streaming = buffer.toString());
-      }
-      final full = buffer.toString();
-      if (full.isNotEmpty) {
-        final assistantMsg = await db.addMessage(convId, 'assistant', full);
-        if (mounted) {
-          setState(() => _messages = [..._messages, assistantMsg]);
-        }
-      }
-    } catch (e) {
-      _showSnack('请求失败：$e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _streaming = '';
-          _sending = false;
-        });
-      }
-      _scrollToBottom();
-    }
+    ref.read(chatControllerProvider.notifier).send(text);
   }
 
-  Future<void> _archive() async {
-    if (_archiving) return;
-    if (_messages.isEmpty) {
-      _showSnack('当前没有可归档的对话');
-      return;
-    }
-    final settings = ref.read(settingsControllerProvider).valueOrNull;
-    if (settings == null || !settings.isConfigured) {
-      _showSnack('请先在「设置」页配置 API');
-      return;
-    }
-    setState(() => _archiving = true);
-    final db = ref.read(databaseProvider);
-    final summaryService = ref.read(summaryServiceProvider);
-    final apiMessages =
-        _messages.map((m) => ChatMessage(m.role, m.content)).toList();
-    try {
-      final result =
-          await summaryService.summarize(settings.toApiConfig(), apiMessages);
-      await db.addArchiveEntry(
-        conversationId: _conversationId,
-        title: result.title,
-        summary: result.summary,
-        keyPoints: result.keyPoints,
-        tags: result.tags,
+  void _clearReference() {
+    ref.read(activeArchiveRefProvider.notifier).state = null;
+    ref.read(activeSourceArchiveIdProvider.notifier).state = null;
+  }
+
+  Future<void> _onArchive() async {
+    final sourceRef = ref.read(activeArchiveRefProvider);
+    final sourceId = ref.read(activeSourceArchiveIdProvider);
+
+    if (sourceId != null && sourceRef != null) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('归档方式'),
+          content: Text('本次对话引用了档案「${sourceRef.title}」。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'new'),
+              child: const Text('新建档案'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'merge'),
+              child: const Text('合并到原档案'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('取消'),
+            ),
+          ],
+        ),
       );
-      if (_conversationId != null) {
-        await db.setConversationTitle(_conversationId!, result.title);
-        await db.setConversationArchived(_conversationId!, true);
-      }
-      if (mounted) {
-        setState(() {
-          _conversationId = null;
-          _messages = [];
-          _streaming = '';
-        });
-        _showSnack('已归档到档案');
-      }
-    } catch (e) {
-      _showSnack('归档失败：$e');
-    } finally {
-      if (mounted) setState(() => _archiving = false);
+      if (choice == null || choice == 'cancel') return;
+      ref
+          .read(chatControllerProvider.notifier)
+          .archive(action: choice == 'merge'
+              ? ArchiveAction.mergeToSource
+              : ArchiveAction.newEntry);
+      return;
     }
+
+    ref.read(chatControllerProvider.notifier).archive();
   }
 
-  String _titleOf(List<Conversation> list) {
-    final id = _conversationId;
+  String _titleOf(List<Conversation> list, int? id) {
     if (id == null) return '新对话';
     for (final c in list) {
       if (c.id == id) return c.title;
@@ -185,23 +96,110 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return '对话';
   }
 
+  Widget _buildReferenceCard(ArchiveRef ar) {
+    return Material(
+      color: Theme.of(context).colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.link, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '已引用档案：${ar.title}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    ar.content,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: '取消引用',
+              icon: const Icon(Icons.close),
+              onPressed: _clearReference,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorBanner(ChatState chat) {
+    final canRetry = chat.messages.isNotEmpty;
+    return Material(
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+        child: Row(
+          children: [
+            const Icon(Icons.error_outline, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                chat.errorText ?? '',
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (canRetry)
+              TextButton(
+                onPressed: () =>
+                    ref.read(chatControllerProvider.notifier).regenerate(),
+                child: const Text('重试'),
+              ),
+            IconButton(
+              tooltip: '关闭',
+              icon: const Icon(Icons.close),
+              onPressed: () =>
+                  ref.read(chatControllerProvider.notifier).clearError(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final chat = ref.watch(chatControllerProvider);
     final conversations =
         ref.watch(conversationsProvider).valueOrNull ?? const <Conversation>[];
+    final activeRef = ref.watch(activeArchiveRefProvider);
+
+    ref.listen(chatControllerProvider, (prev, next) {
+      if (next.streaming.length != (prev?.streaming.length ?? 0) ||
+          next.messages.length != (prev?.messages.length ?? 0)) {
+        _scrollToBottom();
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_titleOf(conversations)),
+        title: Text(_titleOf(conversations, chat.conversationId)),
         actions: [
           IconButton(
             tooltip: '归档本次对话',
-            onPressed: _archiving ? null : _archive,
+            onPressed: chat.archiving ? null : _onArchive,
             icon: const Icon(Icons.archive_outlined),
           ),
           IconButton(
             tooltip: '新对话',
-            onPressed: _sending ? null : _newConversation,
+            onPressed: chat.sending
+                ? null
+                : () => ref.read(chatControllerProvider.notifier).newConversation(),
             icon: const Icon(Icons.add_comment_outlined),
           ),
           Builder(
@@ -215,52 +213,61 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
       drawer: _ConversationDrawer(
         conversations: conversations,
-        currentId: _conversationId,
+        currentId: chat.conversationId,
+        enabled: !chat.sending,
         onSelect: (id) {
           Navigator.pop(context);
-          _loadConversation(id);
+          ref.read(chatControllerProvider.notifier).loadConversation(id);
         },
         onDelete: (id) async {
           await ref.read(databaseProvider).deleteConversation(id);
-          if (id == _conversationId && mounted) {
-            setState(() {
-              _conversationId = null;
-              _messages = [];
-              _streaming = '';
-            });
+          if (id == chat.conversationId) {
+            ref.read(chatControllerProvider.notifier).reset();
           }
         },
       ),
       body: Column(
         children: [
+          if (activeRef != null) _buildReferenceCard(activeRef),
+          if (chat.errorText != null) _buildErrorBanner(chat),
           Expanded(
-            child: _messages.isEmpty && _streaming.isEmpty
+            child: chat.messages.isEmpty && chat.streaming.isEmpty
                 ? const Center(child: Text('开始一段新对话吧'))
                 : ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     itemCount:
-                        _messages.length + (_streaming.isNotEmpty ? 1 : 0),
+                        chat.messages.length + (chat.streaming.isNotEmpty ? 1 : 0),
                     itemBuilder: (context, i) {
-                      if (i < _messages.length) {
-                        final m = _messages[i];
-                        return MessageBubble(role: m.role, content: m.content);
+                      if (i < chat.messages.length) {
+                        final m = chat.messages[i];
+                        final isLastAssistant = m.role == 'assistant' &&
+                            i == chat.messages.length - 1;
+                        return MessageBubble(
+                          role: m.role,
+                          content: m.content,
+                          onRegenerate: isLastAssistant
+                              ? () => ref
+                                  .read(chatControllerProvider.notifier)
+                                  .regenerate()
+                              : null,
+                        );
                       }
                       return MessageBubble(
                         role: 'assistant',
-                        content: _streaming,
+                        content: chat.streaming,
                         streaming: true,
                       );
                     },
                   ),
           ),
-          _buildInputBar(),
+          _buildInputBar(chat),
         ],
       ),
     );
   }
 
-  Widget _buildInputBar() {
+  Widget _buildInputBar(ChatState chat) {
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
@@ -280,20 +287,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   contentPadding:
                       EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 ),
-                onSubmitted: (_) => _send(),
+                onSubmitted: chat.sending ? null : (_) => _send(),
               ),
             ),
             const SizedBox(width: 8),
-            IconButton.filled(
-              onPressed: _sending ? null : _send,
-              icon: _sending
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.send),
-            ),
+            chat.sending
+                ? IconButton.filled(
+                    tooltip: '停止生成',
+                    onPressed: () =>
+                        ref.read(chatControllerProvider.notifier).cancelSend(),
+                    icon: const Icon(Icons.stop),
+                  )
+                : IconButton.filled(
+                    onPressed: _send,
+                    icon: const Icon(Icons.send),
+                  ),
           ],
         ),
       ),
@@ -304,12 +312,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 class _ConversationDrawer extends StatelessWidget {
   final List<Conversation> conversations;
   final int? currentId;
+  final bool enabled;
   final void Function(int id) onSelect;
   final void Function(int id) onDelete;
 
   const _ConversationDrawer({
     required this.conversations,
     required this.currentId,
+    required this.enabled,
     required this.onSelect,
     required this.onDelete,
   });
@@ -336,6 +346,7 @@ class _ConversationDrawer extends StatelessWidget {
                         final c = conversations[i];
                         return ListTile(
                           selected: c.id == currentId,
+                          enabled: enabled,
                           leading: Icon(
                             c.archived
                                 ? Icons.archive
@@ -350,7 +361,7 @@ class _ConversationDrawer extends StatelessWidget {
                           onTap: () => onSelect(c.id),
                           trailing: IconButton(
                             icon: const Icon(Icons.delete_outline),
-                            onPressed: () => onDelete(c.id),
+                            onPressed: enabled ? () => onDelete(c.id) : null,
                           ),
                         );
                       },
